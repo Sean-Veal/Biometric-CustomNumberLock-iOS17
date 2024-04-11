@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LocalAuthentication
 
 /// Custom View
 struct LockView<Content: View>: View {
@@ -19,6 +20,12 @@ struct LockView<Content: View>: View {
     /// View Properties
     @State private var pin: String = ""
     @State private var animateField: Bool = false
+    @State private var isUnlocked: Bool = false
+    @State private var noBiometricAccess: Bool = false
+    /// Lock Context
+    let context = LAContext()
+    /// Scene Phase
+    @Environment(\.scenePhase) private var phase
     
     var body: some View {
         GeometryReader {
@@ -27,29 +34,123 @@ struct LockView<Content: View>: View {
             content
                 .frame(width: size.width, height: size.height)
             
-            if isEnabled {
-                Rectangle()
-                    .ignoresSafeArea()
+            if isEnabled && !isUnlocked {
                 ZStack {
-                    if lockType == .both || lockType == .biometric {
-                        
+                    Rectangle()
+                        .fill(.black)
+                        .ignoresSafeArea()
+                    
+                    if (lockType == .both && !noBiometricAccess) || lockType == .biometric {
+                        Group {
+                            if noBiometricAccess {
+                                Text("Enable biometric authentication in Settings to unlock the view.")
+                                    .font(.callout)
+                                    .multilineTextAlignment(.center)
+                                    .padding(50)
+                            } else {
+                                /// Bio Metric / Pin Unlock
+                                VStack(spacing: 12, content: {
+                                    VStack(spacing: 6, content: {
+                                        Image(systemName: "lock")
+                                            .font(.largeTitle)
+                                        
+                                        Text("Tap to Unlock")
+                                            .font(.caption2)
+                                            .foregroundStyle(.gray)
+                                    })
+                                    .frame(minWidth: 100, minHeight: 100)
+                                    .background(.ultraThinMaterial, in: .rect(cornerRadius: 10))
+                                    .contentShape(.rect)
+                                    .onTapGesture {
+                                        unlockView()
+                                    }
+                                    
+                                    if lockType == .both {
+                                        Text("Enter Pin")
+                                            .frame(width: 100, height: 40)
+                                            .background(.ultraThinMaterial, in: .rect(cornerRadius: 10))
+                                            .contentShape(.rect)
+                                            .onTapGesture {
+                                                noBiometricAccess = true
+                                            }
+                                    }
+                                })
+                            }
+                        }
                     } else {
                         /// Custom Number Pad to type View Lock Pin
                         NumberPadPinView()
                     }
                 }
+                .environment(\.colorScheme, .dark)
+                .transition(.offset(y: size.height + 100))
+            }
+        }
+        .onChange(of: isEnabled, initial: true) { oldValue, newValue in
+            if newValue {
+                unlockView()
+            }
+        }
+        /// Locking when app goes to background
+        .onChange(of: phase) { oldValue, newValue in
+            if newValue != .active && lockWhenAppGoesBackground {
+                isUnlocked = false
+                pin = ""
             }
         }
     }
     
+    private func unlockView() {
+        /// Checking and Unlocking View
+        Task {
+            if isBiometricAvailable && lockType != .number {
+                /// Requesting Biometric Unlock
+                if let result = try? await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock the View"), result {
+                    print("Unlocked")
+                    withAnimation(.snappy, completionCriteria: .logicallyComplete) {
+                        isUnlocked = true
+                    } completion: {
+                        pin = ""
+                    }
+
+                }
+            }
+            
+            /// No Biometric Permission || Lock Type Must be Set as Keypad
+            ///  Updating Biometric Status
+            noBiometricAccess = !isBiometricAvailable
+        }
+    }
+    
+    private var isBiometricAvailable: Bool {
+        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+    }
+    
     /// Numberpad Pin View
     @ViewBuilder
-    func NumberPadPinView() -> some View {
+    private func NumberPadPinView() -> some View {
         VStack(spacing: 15, content: {
             Text("Enter Pin")
                 .font(.title.bold())
                 .frame(maxWidth: .infinity)
+                .overlay(alignment: .leading) {
+                    /// Back button only for Both Lock Type
+                    if lockType == .both && isBiometricAvailable {
+                        Button(action: {
+                            pin = ""
+                            noBiometricAccess = false
+                        }, label: {
+                            Image(systemName: "arrow.left")
+                                .font(.title3)
+                                .contentShape(.rect)
+                            
+                        })
+                        .tint(.white)
+                        .padding(.leading)
+                    }
+                }
             
+            /// Adding Wiggling Animation for Wrong Password with keyframe animator
             HStack(spacing: 10, content: {
                 ForEach(0..<4, id: \.self) { index in
                     RoundedRectangle(cornerRadius: 10)
@@ -65,6 +166,18 @@ struct LockView<Content: View>: View {
                                     .foregroundStyle(.black)
                             }
                         }
+                }
+            })
+            .keyframeAnimator(initialValue: CGFloat.zero, trigger: animateField, content: { content, value in
+                content
+                    .offset(x: value)
+            }, keyframes: { _ in
+                KeyframeTrack {
+                    CubicKeyframe(30, duration: 0.07)
+                    CubicKeyframe(-30, duration: 0.07)
+                    CubicKeyframe(20, duration: 0.07)
+                    CubicKeyframe(-20, duration: 0.07)
+                    CubicKeyframe(0, duration: 0.07)
                 }
             })
             .padding(.top, 15)
@@ -129,10 +242,18 @@ struct LockView<Content: View>: View {
                 if newValue.count == 4 {
                     /// validate pin
                     if lockPin == pin {
-                        print("Unlocked")
+//                        print("Unlocked")
+                        withAnimation(.snappy, completionCriteria: .logicallyComplete, {
+                            isUnlocked = true
+                        }, completion: {
+                            /// Clearing pin
+                            pin = ""
+                            noBiometricAccess = !isBiometricAvailable
+                        })
                     } else {
-                        print("Wrong pin")
+//                        print("Wrong pin")
                         pin = ""
+                        animateField.toggle()
                     }
                 }
             }
